@@ -10,6 +10,7 @@ from paper_review_system.parser.markdown_renderer import MarkdownRenderer
 from paper_review_system.parser.noise_cleaner import NoiseCleaner
 from paper_review_system.parser.pdf_parser import PDFParser
 from paper_review_system.parser.section_builder import SectionTreeBuilder
+from paper_review_system.parser.table_reconstructor import TableStructureRestorer
 from paper_review_system.report.assembler import ReportAssembler
 from paper_review_system.retrieval.planner import ImprovementPlanner
 from paper_review_system.rules.engine import RuleEngine
@@ -21,6 +22,7 @@ class ReviewPipeline:
     def __init__(self) -> None:
         self.pdf_parser = PDFParser()
         self.noise_cleaner = NoiseCleaner()
+        self.table_reconstructor = TableStructureRestorer()
         self.section_builder = SectionTreeBuilder()
         self.anchor_builder = AnchorBuilder()
         self.markdown_renderer = MarkdownRenderer()
@@ -53,6 +55,7 @@ class ReviewPipeline:
 
     def _build_evidence(self, document: PaperDocument) -> EvidenceBundle:
         clean_blocks = self.noise_cleaner.clean(document)
+        clean_blocks = self.table_reconstructor.restore(document.source_file, clean_blocks)
         section_tree = self.section_builder.build(clean_blocks)
         anchors = self.anchor_builder.build(clean_blocks, section_tree)
         return EvidenceBundle(
