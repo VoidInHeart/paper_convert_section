@@ -36,26 +36,28 @@ class ReadingOrderResolver:
         bottom_full_width: list[PaperBlock] = []
 
         column_blocks = [block for block in blocks if self._classify_region(block, split_x, page.width) in {"left", "right"}]
+        body_column_blocks = self._body_column_candidates(blocks, page.width)
         if not column_blocks:
             return sorted(blocks, key=self._fallback_sort_key)
 
-        left_top = min((block.bbox[1] for block in column_blocks if self._classify_region(block, split_x, page.width) == "left"), default=None)
-        right_top = min((block.bbox[1] for block in column_blocks if self._classify_region(block, split_x, page.width) == "right"), default=None)
-        left_bottom = max((block.bbox[3] for block in column_blocks if self._classify_region(block, split_x, page.width) == "left"), default=None)
-        right_bottom = max((block.bbox[3] for block in column_blocks if self._classify_region(block, split_x, page.width) == "right"), default=None)
+        active_column_blocks = body_column_blocks or column_blocks
+        left_top = min((block.bbox[1] for block in active_column_blocks if self._classify_region(block, split_x, page.width) == "left"), default=None)
+        right_top = min((block.bbox[1] for block in active_column_blocks if self._classify_region(block, split_x, page.width) == "right"), default=None)
+        left_bottom = max((block.bbox[3] for block in active_column_blocks if self._classify_region(block, split_x, page.width) == "left"), default=None)
+        right_bottom = max((block.bbox[3] for block in active_column_blocks if self._classify_region(block, split_x, page.width) == "right"), default=None)
         column_top = min(value for value in [left_top, right_top] if value is not None)
         column_bottom = max(value for value in [left_bottom, right_bottom] if value is not None)
 
         for block in blocks:
             region = self._classify_region(block, split_x, page.width)
-            if region == "left":
+            if block.bbox[3] <= column_top + 24:
+                top_full_width.append(block)
+            elif region == "left":
                 left_column.append(block)
             elif region == "right":
                 right_column.append(block)
             else:
-                if block.bbox[3] <= column_top + 24:
-                    top_full_width.append(block)
-                elif block.bbox[1] >= column_bottom - 24:
+                if block.bbox[1] >= column_bottom - 24:
                     bottom_full_width.append(block)
                 else:
                     middle_full_width.append(block)
@@ -68,19 +70,60 @@ class ReadingOrderResolver:
         return ordered
 
     def _detect_split_x(self, blocks: list[PaperBlock], page_width: float) -> float | None:
-        candidates = [
-            block
-            for block in blocks
-            if not block.is_noise
-            and block.type not in {"metadata"}
-            and (block.bbox[2] - block.bbox[0]) <= page_width * 0.62
+        candidate_sets = [
+            self._body_column_candidates(blocks, page_width),
+            self._column_candidates(blocks, page_width, strict=True),
+            self._column_candidates(blocks, page_width, strict=False),
         ]
-        if len(candidates) < 4:
+        for candidates in candidate_sets:
+            split_x = self._split_from_candidates(candidates, page_width)
+            if split_x is not None:
+                return split_x
+        return None
+
+    def _body_column_candidates(self, blocks: list[PaperBlock], page_width: float) -> list[PaperBlock]:
+        candidates: list[PaperBlock] = []
+        for block in blocks:
+            if block.is_noise or block.type != "paragraph":
+                continue
+            width = block.bbox[2] - block.bbox[0]
+            if width < page_width * 0.28 or width > page_width * 0.52:
+                continue
+            if len(block.text.strip()) < 120:
+                continue
+            candidates.append(block)
+        return candidates
+
+    def _column_candidates(self, blocks: list[PaperBlock], page_width: float, strict: bool) -> list[PaperBlock]:
+        candidates: list[PaperBlock] = []
+        min_width = page_width * (0.24 if strict else 0.18)
+        max_width = page_width * (0.52 if strict else 0.62)
+        min_text_length = 40 if strict else 18
+
+        for block in blocks:
+            if block.is_noise or block.type == "metadata":
+                continue
+            width = block.bbox[2] - block.bbox[0]
+            if width < min_width or width > max_width:
+                continue
+            if strict:
+                if block.type not in {"paragraph", "heading", "table", "caption"}:
+                    continue
+                if block.type == "paragraph" and len(block.text.strip()) < min_text_length:
+                    continue
+            else:
+                if len(block.text.strip()) < min_text_length and block.type != "heading":
+                    continue
+            candidates.append(block)
+        return candidates
+
+    def _split_from_candidates(self, candidates: list[PaperBlock], page_width: float) -> float | None:
+        if len(candidates) < 2:
             return None
 
         x_positions = sorted(block.bbox[0] for block in candidates)
         gaps = [(x_positions[index + 1] - x_positions[index], index) for index in range(len(x_positions) - 1)]
-        large_gaps = [(gap, index) for gap, index in gaps if gap >= page_width * 0.12]
+        large_gaps = [(gap, index) for gap, index in gaps if gap >= page_width * 0.14]
         if not large_gaps:
             return None
 
@@ -89,7 +132,7 @@ class ReadingOrderResolver:
 
         left_count = sum(1 for block in candidates if ((block.bbox[0] + block.bbox[2]) / 2) < split_x)
         right_count = sum(1 for block in candidates if ((block.bbox[0] + block.bbox[2]) / 2) >= split_x)
-        if left_count < 2 or right_count < 2:
+        if left_count < 1 or right_count < 1:
             return None
         return split_x
 

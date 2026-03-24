@@ -109,10 +109,10 @@ class MarkdownRendererTest(unittest.TestCase):
     def test_reading_order_prefers_left_column_before_right_column(self) -> None:
         resolver = ReadingOrderResolver()
         blocks = [
-            PaperBlock(block_id="right_top", page=1, bbox=[310, 80, 540, 140], type="paragraph", text="right top"),
-            PaperBlock(block_id="left_low", page=1, bbox=[50, 220, 280, 320], type="paragraph", text="left low"),
-            PaperBlock(block_id="left_top", page=1, bbox=[50, 90, 280, 160], type="paragraph", text="left top"),
-            PaperBlock(block_id="right_low", page=1, bbox=[310, 230, 540, 300], type="paragraph", text="right low"),
+            PaperBlock(block_id="right_top", page=1, bbox=[310, 80, 540, 140], type="paragraph", text="right top " * 20),
+            PaperBlock(block_id="left_low", page=1, bbox=[50, 220, 280, 320], type="paragraph", text="left low " * 20),
+            PaperBlock(block_id="left_top", page=1, bbox=[50, 90, 280, 160], type="paragraph", text="left top " * 20),
+            PaperBlock(block_id="right_low", page=1, bbox=[310, 230, 540, 300], type="paragraph", text="right low " * 20),
         ]
         ordered = resolver.order_blocks(blocks, [PageInfo(page=1, width=595, height=842)])
         self.assertEqual([block.block_id for block in ordered], ["left_top", "left_low", "right_top", "right_low"])
