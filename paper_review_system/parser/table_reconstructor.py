@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from paper_review_system.models import PaperBlock
+from paper_review_system.models import PageInfo
+from paper_review_system.parser.reading_order import ReadingOrderResolver
 
 
 @dataclass(slots=True)
@@ -23,7 +25,10 @@ class TableCandidate:
 class TableStructureRestorer:
     """Recover structured tables from PDF pages and inject them into the block stream."""
 
-    def restore(self, pdf_path: str | Path, clean_blocks: list[PaperBlock]) -> list[PaperBlock]:
+    def __init__(self) -> None:
+        self.reading_order = ReadingOrderResolver()
+
+    def restore(self, pdf_path: str | Path, clean_blocks: list[PaperBlock], pages: list[PageInfo] | None = None) -> list[PaperBlock]:
         path = Path(pdf_path)
         try:
             import fitz
@@ -83,6 +88,8 @@ class TableStructureRestorer:
             self._mark_overlapping_blocks(page_to_blocks.get(candidate.page, []), candidate.bbox)
 
         combined = updated_blocks + generated_tables
+        if pages:
+            return self.reading_order.order_blocks(combined, pages)
         return sorted(combined, key=self._block_sort_key)
 
     def _extract_table_payload(self, detected_table: object) -> dict[str, list] | None:

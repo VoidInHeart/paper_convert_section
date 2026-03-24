@@ -5,6 +5,7 @@ import statistics
 from pathlib import Path
 
 from paper_review_system.models import PageInfo, PaperBlock, PaperDocument, build_doc_id
+from paper_review_system.parser.reading_order import ReadingOrderResolver
 
 
 class PDFParser:
@@ -25,6 +26,9 @@ class PDFParser:
         "鉁?": "[Y]",
         "脳": "[N]",
     }
+
+    def __init__(self) -> None:
+        self.reading_order = ReadingOrderResolver()
 
     def parse(self, pdf_path: str | Path) -> PaperDocument:
         path = Path(pdf_path)
@@ -75,6 +79,7 @@ class PDFParser:
 
         pdf.close()
         blocks = [PaperBlock(**record) for record in block_records]
+        blocks = self.reading_order.order_blocks(blocks, pages)
         metadata = {"parser": "pymupdf", "block_count": len(blocks)}
         return PaperDocument(doc_id=doc_id, source_file=source_file, pages=pages, blocks=blocks, metadata=metadata)
 

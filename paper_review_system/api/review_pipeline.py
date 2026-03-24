@@ -55,7 +55,7 @@ class ReviewPipeline:
 
     def _build_evidence(self, document: PaperDocument) -> EvidenceBundle:
         clean_blocks = self.noise_cleaner.clean(document)
-        clean_blocks = self.table_reconstructor.restore(document.source_file, clean_blocks)
+        clean_blocks = self.table_reconstructor.restore(document.source_file, clean_blocks, document.pages)
         section_tree = self.section_builder.build(clean_blocks)
         anchors = self.anchor_builder.build(clean_blocks, section_tree)
         return EvidenceBundle(

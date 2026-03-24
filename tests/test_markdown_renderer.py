@@ -3,8 +3,10 @@ from __future__ import annotations
 import unittest
 
 from paper_review_system.models import PaperBlock
+from paper_review_system.models import PageInfo
 from paper_review_system.parser.markdown_renderer import MarkdownRenderer
 from paper_review_system.parser.pdf_parser import PDFParser
+from paper_review_system.parser.reading_order import ReadingOrderResolver
 from paper_review_system.parser.table_reconstructor import TableCandidate, TableStructureRestorer
 from paper_review_system.rules.grammar_rules import GrammarRuleChecker
 from paper_review_system.rules.violation_id import ViolationIdAllocator
@@ -103,6 +105,17 @@ class MarkdownRendererTest(unittest.TestCase):
         self.assertEqual(candidate.caption, "Table 2. Demo table")
         self.assertTrue(blocks[1][0].is_noise)
         self.assertEqual(blocks[1][0].role, "table_caption_bound")
+
+    def test_reading_order_prefers_left_column_before_right_column(self) -> None:
+        resolver = ReadingOrderResolver()
+        blocks = [
+            PaperBlock(block_id="right_top", page=1, bbox=[310, 80, 540, 140], type="paragraph", text="right top"),
+            PaperBlock(block_id="left_low", page=1, bbox=[50, 220, 280, 320], type="paragraph", text="left low"),
+            PaperBlock(block_id="left_top", page=1, bbox=[50, 90, 280, 160], type="paragraph", text="left top"),
+            PaperBlock(block_id="right_low", page=1, bbox=[310, 230, 540, 300], type="paragraph", text="right low"),
+        ]
+        ordered = resolver.order_blocks(blocks, [PageInfo(page=1, width=595, height=842)])
+        self.assertEqual([block.block_id for block in ordered], ["left_top", "left_low", "right_top", "right_low"])
 
 
 if __name__ == "__main__":
