@@ -120,6 +120,7 @@ class TableStructureRestorer:
         expanded_rows = self._expand_rows(normalized_rows, col_count)
         if headers is None:
             headers = [f"Column {index}" for index in range(1, col_count + 1)]
+        headers, expanded_rows = self._repair_compressed_metric_table(headers, expanded_rows, normalized_rows)
         return {"headers": headers, "rows": expanded_rows}
 
     def _merge_candidates(self, candidates: list[TableCandidate]) -> list[TableCandidate]:
@@ -221,6 +222,38 @@ class TableStructureRestorer:
             expanded.append([cell.replace("\n", " <br> ") for cell in padded])
         return [row for row in expanded if any(cell for cell in row)]
 
+    def _repair_compressed_metric_table(
+        self,
+        headers: list[str],
+        rows: list[list[str]],
+        raw_rows: list[list[str]],
+    ) -> tuple[list[str], list[list[str]]]:
+        header_text = " ".join(cell for row in raw_rows[:1] for cell in row if cell)
+        metric_headers = self._extract_metric_headers(header_text)
+        if not metric_headers:
+            return headers, rows
+
+        rebuilt: list[list[str]] = []
+        index = 0
+        if rows and self._is_metric_header_row(rows[0]):
+            index = 1
+
+        rebuilt_any = False
+        while index < len(rows):
+            row = self._pad_row(rows[index], 4)
+            group = self._rebuild_metric_group(rows, index, metric_headers)
+            if group is not None:
+                rebuilt.extend(group["rows"])
+                index = group["next_index"]
+                rebuilt_any = True
+                continue
+            rebuilt.append(row)
+            index += 1
+
+        if rebuilt_any:
+            return ["Method", "Train Subset", *metric_headers], rebuilt
+        return headers, rows
+
     @staticmethod
     def _split_cell_lines(cell: str) -> list[str]:
         if not cell:
@@ -233,6 +266,89 @@ class TableStructureRestorer:
     def _looks_numeric(text: str) -> bool:
         compact = re.sub(r"[\s,%.$]", "", text)
         return bool(compact) and compact.replace("-", "", 1).isdigit()
+
+    @staticmethod
+    def _split_numeric_tokens(text: str) -> list[str]:
+        return re.findall(r"-?\d+(?:\.\d+)?", text)
+
+    def _rebuild_metric_group(
+        self,
+        rows: list[list[str]],
+        start: int,
+        metric_headers: list[str],
+    ) -> dict[str, object] | None:
+        if start >= len(rows):
+            return None
+
+        current = self._pad_row(rows[start], 4)
+        if not (current[0] and current[1] and current[2]):
+            return None
+        first_metric_values = self._split_numeric_tokens(current[3])
+        if len(first_metric_values) != len(metric_headers) - 1:
+            return None
+
+        method_rows = [current]
+        index = start + 1
+        while index < len(rows):
+            candidate = self._pad_row(rows[index], 4)
+            metric_values = self._split_numeric_tokens(candidate[3])
+            if candidate[0] and not candidate[1] and not candidate[2] and len(metric_values) == len(metric_headers) - 1:
+                method_rows.append(candidate)
+                index += 1
+                continue
+            break
+
+        if len(method_rows) < 2:
+            return None
+
+        none_values = [current[2]]
+        while index < len(rows) and len(none_values) < len(method_rows):
+            candidate = self._pad_row(rows[index], 4)
+            if not candidate[0] and not candidate[1] and candidate[2] and not candidate[3]:
+                none_values.append(candidate[2])
+                index += 1
+                continue
+            break
+
+        if len(none_values) != len(method_rows):
+            return None
+
+        rebuilt_rows: list[list[str]] = []
+        subset = current[1]
+        for row_index, method_row in enumerate(method_rows):
+            metric_values = self._split_numeric_tokens(method_row[3])
+            rebuilt_rows.append([method_row[0], subset, none_values[row_index], *metric_values])
+
+        return {"rows": rebuilt_rows, "next_index": index}
+
+    @staticmethod
+    def _extract_metric_headers(header_text: str) -> list[str] | None:
+        compact = re.sub(r"\s+", " ", header_text).strip().lower()
+        if "method" not in compact or "subset" not in compact:
+            return None
+        tokens = re.findall(r"\b(?:none|gn|gb|mb|jpeg)\b", compact)
+        if len(tokens) < 3:
+            return None
+        ordered: list[str] = []
+        for token in tokens:
+            upper = token.upper()
+            label = "None" if upper == "NONE" else upper
+            if label not in ordered:
+                ordered.append(label)
+        return ordered
+
+    @staticmethod
+    def _is_metric_header_row(row: list[str]) -> bool:
+        first_cell = row[0] if row else ""
+        compact = re.sub(r"\s+", " ", first_cell.replace("<br>", " ")).strip().lower()
+        return "method" in compact and "subset" in compact and "none" in compact
+
+    @staticmethod
+    def _pad_row(row: list[str], size: int) -> list[str]:
+        padded = list(row[:size])
+        if len(padded) < size:
+            padded.extend([""] * (size - len(padded)))
+        return padded
 
     def _find_table_caption(
         self,

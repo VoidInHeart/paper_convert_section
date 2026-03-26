@@ -52,17 +52,21 @@ class PDFParser:
             body_size = self._estimate_body_font_size(text_blocks)
 
             for block_index, raw_block in enumerate(text_blocks, start=1):
-                text = self._flatten_block_text(raw_block).strip()
+                raw_text = self._flatten_block_text(raw_block, normalize=False).strip()
+                text = self._normalize_text(raw_text)
                 if not text:
                     continue
                 bbox = [round(float(value), 2) for value in raw_block.get("bbox", (0, 0, 0, 0))]
                 font_size = self._block_font_size(raw_block)
+                line_count = self._block_line_count(raw_block)
                 block_type, level, role = self._classify_block(
                     text=text,
+                    raw_text=raw_text,
                     font_size=font_size,
                     body_size=body_size,
                     page_number=page_index,
                     block_index=block_index,
+                    line_count=line_count,
                 )
                 block_records.append(
                     {
@@ -84,7 +88,7 @@ class PDFParser:
         return PaperDocument(doc_id=doc_id, source_file=source_file, pages=pages, blocks=blocks, metadata=metadata)
 
     @classmethod
-    def _flatten_block_text(cls, raw_block: dict) -> str:
+    def _flatten_block_text(cls, raw_block: dict, normalize: bool = True) -> str:
         parts: list[str] = []
         for line in raw_block.get("lines", []):
             line_parts: list[str] = []
@@ -94,7 +98,8 @@ class PDFParser:
                     line_parts.append(span_text)
             if line_parts:
                 parts.append(" ".join(line_parts))
-        return cls._normalize_text("\n".join(parts))
+        joined = "\n".join(parts)
+        return cls._normalize_text(joined) if normalize else joined
 
     @staticmethod
     def _block_font_size(raw_block: dict) -> float:
@@ -107,6 +112,14 @@ class PDFParser:
         if not sizes:
             return 0.0
         return round(max(sizes), 2)
+
+    @staticmethod
+    def _block_line_count(raw_block: dict) -> int:
+        return sum(
+            1
+            for line in raw_block.get("lines", [])
+            if any(str(span.get("text", "")).strip() for span in line.get("spans", []))
+        )
 
     @staticmethod
     def _estimate_body_font_size(text_blocks: list[dict]) -> float:
@@ -123,14 +136,18 @@ class PDFParser:
     @staticmethod
     def _classify_block(
         text: str,
+        raw_text: str,
         font_size: float,
         body_size: float,
         page_number: int,
         block_index: int,
+        line_count: int,
     ) -> tuple[str, int | None, str | None]:
         stripped = text.strip()
-        lines = [line for line in stripped.splitlines() if line.strip()]
-        single_line = len(lines) == 1
+        raw_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        single_line = line_count <= 1 and len(raw_lines) <= 1
+        short_heading = len(stripped) <= 120
+        heading_line_ok = line_count <= 2
         is_title = page_number == 1 and block_index <= 3 and font_size >= body_size * 1.5
 
         if PDFParser._looks_like_header_footer(stripped):
@@ -138,7 +155,7 @@ class PDFParser:
         if PDFParser._looks_like_caption(stripped):
             return "caption", None, "caption"
 
-        looks_like_heading = single_line and (
+        looks_like_heading = heading_line_ok and short_heading and single_line and (
             font_size >= body_size * 1.18
             or stripped.lower() in {"abstract", "introduction", "references", "conclusion"}
             or stripped.startswith(("摘要", "引言", "结论", "参考文献", "附录"))

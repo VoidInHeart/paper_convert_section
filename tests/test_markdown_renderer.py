@@ -131,6 +131,24 @@ class MarkdownRendererTest(unittest.TestCase):
         self.assertTrue(blocks[1][0].is_noise)
         self.assertEqual(blocks[1][0].role, "table_caption_bound")
 
+    def test_table_reconstructor_repairs_compressed_metric_table(self) -> None:
+        restorer = TableStructureRestorer()
+        headers = ["Column 1", "Column 2", "Column 3", "Column 4"]
+        rows = [
+            ["Processing Method <br> Method Train <br> Subset None GN GB MB JPEG", "", "", ""],
+            ["Xception", "T2I", "59.52", "47.65 15.02 56.59 58.69"],
+            ["F3-Net", "", "", "48.04 74.67 71.68 74.61"],
+            ["EfficientNet", "", "", "40.09 53.62 65.35 54.98"],
+            ["DIRE", "", "", "34.07 32.78 41.36 40.99"],
+            ["", "", "76.08", ""],
+            ["", "", "67.69", ""],
+            ["", "", "66.28", ""],
+        ]
+        repaired_headers, repaired_rows = restorer._repair_compressed_metric_table(headers, rows, [["Processing Method", "Method", "Train", "Subset None GN GB MB JPEG"]])
+        self.assertEqual(repaired_headers, ["Method", "Train Subset", "None", "GN", "GB", "MB", "JPEG"])
+        self.assertEqual(repaired_rows[0], ["Xception", "T2I", "59.52", "47.65", "15.02", "56.59", "58.69"])
+        self.assertEqual(repaired_rows[1], ["F3-Net", "T2I", "76.08", "48.04", "74.67", "71.68", "74.61"])
+
     def test_reading_order_prefers_left_column_before_right_column(self) -> None:
         resolver = ReadingOrderResolver()
         blocks = [
@@ -141,6 +159,18 @@ class MarkdownRendererTest(unittest.TestCase):
         ]
         ordered = resolver.order_blocks(blocks, [PageInfo(page=1, width=595, height=842)])
         self.assertEqual([block.block_id for block in ordered], ["left_top", "left_low", "right_top", "right_low"])
+
+    def test_long_multiline_text_is_not_heading(self) -> None:
+        block_type, level, role = PDFParser._classify_block(
+            text="This is a long paragraph that should remain body text even if the font size is slightly larger than normal and spans multiple lines.",
+            raw_text="This is a long paragraph\nthat should remain body text\neven if the font size is slightly larger.",
+            font_size=12.5,
+            body_size=10.0,
+            page_number=7,
+            block_index=5,
+            line_count=3,
+        )
+        self.assertEqual((block_type, level, role), ("paragraph", None, "body"))
 
 
 if __name__ == "__main__":
