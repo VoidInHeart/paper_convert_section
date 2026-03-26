@@ -182,6 +182,34 @@ class MarkdownRendererTest(unittest.TestCase):
         self.assertEqual(repaired_rows[0], ["Deepfake Test Subset", "Xception† [49]", "FF++ [49]", "98.12", "62.43", "56.83", "85.97", "58.64"])
         self.assertEqual(repaired_rows[4], ["General Diffusion Test Subset", "Xception† [49]", "DFor", "99.98", "20.52", "30.92", "69.42", "37.89"])
 
+    def test_table_reconstructor_repairs_egr_matrix_table(self) -> None:
+        restorer = TableStructureRestorer()
+        raw_rows = [
+            ["Method Train Test Subset\nBackone +EGR Subset T2I I2I FS FE", "", "", "", "", "", ""],
+            ["Backone", "+EGR", "", "T2I I2I FS FE", "", "", ""],
+            ["Xception\nXception\nF3-Net\nF3-Net", "\u00d7\n\u2713\n\u00d7\n\u2713", "T2I", "93.32", "86.85 34.65 23.28\n89.48 43.74 55.50\n88.50 45.07 71.06\n93.30 56.34 79.89", "", ""],
+            ["", "", "", "95.57", "", "", ""],
+            ["", "", "", "99.60", "", "", ""],
+            ["", "", "", "99.64", "", "", ""],
+            ["Xception\nXception\nF3-Net\nF3-Net", "\u00d7\n\u2713\n\u00d7\n\u2713", "I2I", "87.82\n99.00\n87.23\n96.85", "98.92", "36.82 33.39\n49.73 33.81\n40.62 46.19\n48.69 47.66", ""],
+            ["", "", "", "", "99.94", "", ""],
+            ["", "", "", "", "99.50", "", ""],
+            ["", "", "", "", "99.70", "", ""],
+            ["Xception\nXception\nF3-Net\nF3-Net", "\u00d7\n\u2713\n\u00d7\n\u2713", "FS", "23.17 24.47\n67.41 55.92\n35.43 30.39\n63.51 63.75", "", "99.95", "10.17\n46.01\n20.79\n31.14"],
+            ["", "", "", "", "", "99.98", ""],
+            ["", "", "", "", "", "99.98", ""],
+            ["", "", "", "", "", "99.99", ""],
+            ["Xception\nXception\nF3-Net\nF3-Net", "\u00d7\n\u2713\n\u00d7\n\u2713", "FE", "80.84 79.12 70.81\n94.15 84.04 73.09\n82.32 76.92 56.27\n97.91 93.46 79.33", "", "", "99.95"],
+            ["", "", "", "", "", "", "99.99"],
+            ["", "", "", "", "", "", "99.60"],
+            ["", "", "", "", "", "", "99.61"],
+        ]
+        repaired_headers, repaired_rows = restorer._repair_egr_matrix_table(None, [], raw_rows)
+        self.assertEqual(repaired_headers, ["Backbone", "+EGR", "Train Subset", "T2I", "I2I", "FS", "FE"])
+        self.assertEqual(repaired_rows[0], ["Xception", "\u00d7", "T2I", "93.32", "86.85", "34.65", "23.28"])
+        self.assertEqual(repaired_rows[5], ["Xception", "\u2713", "I2I", "99.00", "99.94", "49.73", "33.81"])
+        self.assertEqual(repaired_rows[-1], ["F3-Net", "\u2713", "FE", "97.91", "93.46", "79.33", "99.61"])
+
     def test_reading_order_prefers_left_column_before_right_column(self) -> None:
         resolver = ReadingOrderResolver()
         blocks = [

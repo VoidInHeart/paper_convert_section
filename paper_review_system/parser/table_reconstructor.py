@@ -110,19 +110,21 @@ class TableStructureRestorer:
         largest_cell = max((len(cell) for row in normalized_rows for cell in row), default=0)
         fill_ratio = nonempty_count / max(1, row_count * col_count)
         subset_matrix = self._looks_like_subset_matrix(normalized_rows)
+        egr_matrix = self._looks_like_egr_matrix(normalized_rows)
 
         if col_count < 2 or row_count < 2:
             return None
-        if nonempty_count < 4 or (fill_ratio < 0.35 and not subset_matrix):
+        if nonempty_count < 4 or (fill_ratio < 0.35 and not subset_matrix and not egr_matrix):
             return None
         if filled_rows == 0:
             return None
-        if char_count and largest_cell / char_count > 0.72 and nonempty_count <= 4 and not subset_matrix:
+        if char_count and largest_cell / char_count > 0.72 and nonempty_count <= 4 and not subset_matrix and not egr_matrix:
             return None
 
         headers = self._normalize_headers(getattr(getattr(detected_table, "header", None), "names", None), col_count)
         expanded_rows = self._expand_rows(normalized_rows, col_count)
         headers, expanded_rows = self._repair_subset_matrix_table(headers, expanded_rows, normalized_rows)
+        headers, expanded_rows = self._repair_egr_matrix_table(headers, expanded_rows, normalized_rows)
         if headers is None:
             headers = [f"Column {index}" for index in range(1, col_count + 1)]
         headers, expanded_rows = self._repair_compressed_metric_table(headers, expanded_rows, normalized_rows)
@@ -358,6 +360,62 @@ class TableStructureRestorer:
             return ["Test Subset", "Method", "Train Set", *unified_headers], rebuilt_rows
         return headers, rows
 
+    def _repair_egr_matrix_table(
+        self,
+        headers: list[str] | None,
+        rows: list[list[str]],
+        raw_rows: list[list[str]],
+    ) -> tuple[list[str] | None, list[list[str]]]:
+        if not self._looks_like_egr_matrix(raw_rows):
+            return headers, rows
+
+        metric_headers = ["T2I", "I2I", "FS", "FE"]
+        rebuilt_rows: list[list[str]] = []
+        index = 0
+        while index < len(raw_rows):
+            row = self._pad_row(raw_rows[index], 7)
+            train_subset = row[2].strip()
+            if train_subset not in metric_headers or not row[0] or not row[1]:
+                index += 1
+                continue
+
+            train_index = metric_headers.index(train_subset)
+            methods = self._split_cell_lines(row[0])
+            egr_flags = self._split_cell_lines(row[1])
+            row_count = min(len(methods), len(egr_flags))
+            if row_count == 0:
+                index += 1
+                continue
+
+            prefix_values = self._extract_egr_prefix_values(row[3], row_count, train_index)
+            diagonal_values, next_index = self._collect_egr_diagonal_values(raw_rows, index, row_count, 3 + train_index)
+            suffix_values = self._extract_egr_suffix_values(
+                row[4 + train_index] if train_index < len(metric_headers) - 1 else "",
+                row_count,
+                len(metric_headers) - train_index - 1,
+            )
+
+            if prefix_values is None or len(diagonal_values) != row_count or suffix_values is None:
+                index += 1
+                continue
+
+            for row_index in range(row_count):
+                rebuilt_rows.append(
+                    [
+                        methods[row_index],
+                        egr_flags[row_index],
+                        train_subset,
+                        *prefix_values[row_index],
+                        diagonal_values[row_index],
+                        *suffix_values[row_index],
+                    ]
+                )
+            index = next_index
+
+        if rebuilt_rows:
+            return ["Backbone", "+EGR", "Train Subset", *metric_headers], rebuilt_rows
+        return headers, rows
+
     @staticmethod
     def _split_cell_lines(cell: str) -> list[str]:
         if not cell:
@@ -454,6 +512,11 @@ class TableStructureRestorer:
         return "Test Subset" in compact and "Train Set" in compact
 
     @staticmethod
+    def _looks_like_egr_matrix(raw_rows: list[list[str]]) -> bool:
+        compact = re.sub(r"\s+", " ", " ".join(cell for row in raw_rows for cell in row if cell))
+        return "+EGR" in compact and "T2I" in compact and "I2I" in compact and "FS" in compact and "FE" in compact
+
+    @staticmethod
     def _extract_subset_metric_headers(header_text: str) -> list[str]:
         compact = re.sub(r"\s+", " ", header_text)
         tokens = re.findall(r"(FF\+\+|DFor|T2I|I2I|FS|FE)", compact, re.IGNORECASE)
@@ -470,6 +533,68 @@ class TableStructureRestorer:
     def _is_placeholder_train_row(row: list[str]) -> bool:
         padded = TableStructureRestorer._pad_row(row, 4)
         return not padded[0] and padded[1] == "Train Set" and not padded[2] and not padded[3]
+
+    def _extract_egr_prefix_values(
+        self,
+        cell_text: str,
+        row_count: int,
+        prefix_count: int,
+    ) -> list[list[str]] | None:
+        if prefix_count == 0:
+            return [[] for _ in range(row_count)]
+        lines = self._split_cell_lines(cell_text)
+        if len(lines) != row_count:
+            return None
+        prefix_values: list[list[str]] = []
+        for line in lines:
+            values = self._split_numeric_tokens(line)
+            if len(values) != prefix_count:
+                return None
+            prefix_values.append(values)
+        return prefix_values
+
+    def _collect_egr_diagonal_values(
+        self,
+        raw_rows: list[list[str]],
+        start: int,
+        row_count: int,
+        column_index: int,
+    ) -> tuple[list[str], int]:
+        first_row = self._pad_row(raw_rows[start], 7)
+        diagonal_values = []
+        if first_row[column_index]:
+            diagonal_values.extend(self._split_numeric_tokens(first_row[column_index]))
+
+        index = start + 1
+        while len(diagonal_values) < row_count and index < len(raw_rows):
+            candidate = self._pad_row(raw_rows[index], 7)
+            if any(candidate[position] for position in range(7) if position != column_index):
+                break
+            values = self._split_numeric_tokens(candidate[column_index])
+            if len(values) != 1:
+                break
+            diagonal_values.extend(values)
+            index += 1
+        return diagonal_values[:row_count], index
+
+    def _extract_egr_suffix_values(
+        self,
+        cell_text: str,
+        row_count: int,
+        suffix_count: int,
+    ) -> list[list[str]] | None:
+        if suffix_count == 0:
+            return [[] for _ in range(row_count)]
+        lines = self._split_cell_lines(cell_text)
+        if len(lines) != row_count:
+            return None
+        suffix_values: list[list[str]] = []
+        for line in lines:
+            values = self._split_numeric_tokens(line)
+            if len(values) != suffix_count:
+                return None
+            suffix_values.append(values)
+        return suffix_values
 
     def _expand_first_subset_style(
         self,
