@@ -210,6 +210,22 @@ class MarkdownRendererTest(unittest.TestCase):
         self.assertEqual(repaired_rows[5], ["Xception", "\u2713", "I2I", "99.00", "99.94", "49.73", "33.81"])
         self.assertEqual(repaired_rows[-1], ["F3-Net", "\u2713", "FE", "97.91", "93.46", "79.33", "99.61"])
 
+    def test_parse_regularization_ablation_table(self) -> None:
+        restorer = TableStructureRestorer()
+        blocks = [
+            PaperBlock(block_id="1", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Method Test Subset"),
+            PaperBlock(block_id="2", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="T2I I2I FS FE"),
+            PaperBlock(block_id="3", page=1, bbox=[0, 0, 1, 1], type="formula", text="Xception 95.57 89.48 43.74 55.50 w/o regu. 95.54( -0.03 ) 88.91( -0.57 ) 43.31 ( -0.43 ) 53.21 ( -2.29 )"),
+            PaperBlock(block_id="4", page=1, bbox=[0, 0, 1, 1], type="formula", text="DIRE 99.79 99.76 43.59 66.41 w/o regu. 99.78( -0.01 ) 99.70 ( -0.06 ) 32.36 ( -11.23 ) 61.61 ( -4.80 )"),
+        ]
+        parsed = restorer._parse_regularization_ablation_table(blocks)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["headers"], ["Method", "Setting", "T2I", "I2I", "FS", "FE"])
+        self.assertEqual(parsed["rows"][0], ["Xception", "with regu.", "95.57", "89.48", "43.74", "55.50"])
+        self.assertEqual(parsed["rows"][1], ["Xception", "w/o regu.", "95.54 (-0.03)", "88.91 (-0.57)", "43.31 (-0.43)", "53.21 (-2.29)"])
+        self.assertEqual(parsed["rows"][-1], ["DIRE", "w/o regu.", "99.78 (-0.01)", "99.70 (-0.06)", "32.36 (-11.23)", "61.61 (-4.80)"])
+
     def test_reading_order_prefers_left_column_before_right_column(self) -> None:
         resolver = ReadingOrderResolver()
         blocks = [

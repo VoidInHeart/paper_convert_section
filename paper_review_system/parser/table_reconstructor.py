@@ -734,6 +734,8 @@ class TableStructureRestorer:
             return self._parse_same_dataset_auc_table(source_blocks)
         if "trained on different datasets" in compact_caption:
             return self._parse_cross_dataset_auc_table(source_blocks)
+        if "removal of the regularization" in compact_caption:
+            return self._parse_regularization_ablation_table(source_blocks)
         return None
 
     def _parse_metric_comparison_table(self, source_blocks: list[PaperBlock]) -> dict[str, list] | None:
@@ -812,6 +814,24 @@ class TableStructureRestorer:
             return None
         return {"headers": ["Method", "Train Set", *datasets], "rows": rows}
 
+    def _parse_regularization_ablation_table(self, source_blocks: list[PaperBlock]) -> dict[str, list] | None:
+        metric_headers = self._extract_metric_headers_from_blocks(source_blocks)
+        if len(metric_headers) != 4:
+            return None
+
+        rows: list[list[str]] = []
+        for block in source_blocks:
+            compact = re.sub(r"\s+", " ", block.text).strip()
+            if "w/o regu." not in compact:
+                continue
+            parsed_rows = self._parse_regularization_ablation_row(compact, metric_headers)
+            if parsed_rows is not None:
+                rows.extend(parsed_rows)
+
+        if not rows:
+            return None
+        return {"headers": ["Method", "Setting", *metric_headers], "rows": rows}
+
     @staticmethod
     def _normalize_dense_text(text: str) -> str:
         normalized = re.sub(r"\[\s*(\d+)\s*\]", r"[\1]", text)
@@ -819,6 +839,59 @@ class TableStructureRestorer:
         normalized = re.sub(r"EffciientNet", "EfficientNet", normalized, flags=re.IGNORECASE)
         normalized = re.sub(r"\s+", " ", normalized)
         return normalized.strip()
+
+    def _extract_metric_headers_from_blocks(self, source_blocks: list[PaperBlock]) -> list[str]:
+        metric_labels = ["T2I", "I2I", "FS", "FE"]
+        collected: list[str] = []
+        for block in source_blocks:
+            compact = re.sub(r"\s+", " ", block.text).strip().upper()
+            for label in metric_labels:
+                if label in compact and label not in collected:
+                    collected.append(label)
+        return collected
+
+    def _parse_regularization_ablation_row(
+        self,
+        text: str,
+        metric_headers: list[str],
+    ) -> list[list[str]] | None:
+        normalized = self._normalize_dense_text(text)
+        marker = "w/o regu."
+        if marker not in normalized:
+            return None
+
+        prefix, suffix = normalized.split(marker, 1)
+        with_values = re.findall(r"\d+(?:\.\d+)?", prefix)
+        if len(with_values) < len(metric_headers):
+            return None
+        with_values = with_values[-len(metric_headers):]
+
+        first_value_index = prefix.find(with_values[0])
+        method = prefix[:first_value_index].strip()
+        if not method:
+            return None
+
+        without_values = self._extract_ablation_metric_tokens(suffix)
+        if len(without_values) != len(metric_headers):
+            return None
+
+        return [
+            [method, "with regu.", *with_values],
+            [method, "w/o regu.", *without_values],
+        ]
+
+    @staticmethod
+    def _extract_ablation_metric_tokens(text: str) -> list[str]:
+        raw_tokens = re.findall(r"\d+(?:\.\d+)?(?:\s*\(\s*-?\d+(?:\.\d+)?\s*\))?", text)
+        normalized: list[str] = []
+        for token in raw_tokens:
+            compact = re.sub(r"\s+", "", token)
+            if "(" in compact:
+                value, delta = compact.split("(", 1)
+                normalized.append(f"{value} ({delta}")
+            else:
+                normalized.append(compact)
+        return normalized
 
     def _split_dense_rows(self, text: str, value_count: int) -> list[list[str]]:
         normalized = self._normalize_dense_text(text)
@@ -890,6 +963,10 @@ class TableStructureRestorer:
             return True
         if compact.startswith(("Table ", "Figure ", "Fig. ")):
             return False
+        upper = compact.upper()
+        metric_labels = {"T2I", "I2I", "FS", "FE"}
+        if metric_labels.issubset(set(upper.split())):
+            return True
         if block.type == "paragraph" and 1 <= len(compact.split()) <= 3 and compact[0].isalnum():
             return True
         numeric_tokens = re.findall(r"\d+(?:\.\d+)?", compact)
