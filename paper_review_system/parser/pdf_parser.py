@@ -138,10 +138,19 @@ class PDFParser:
         if PDFParser._looks_like_caption(stripped):
             return "caption", None, "caption"
 
+        # looks_like_heading = single_line and (
+        #     font_size >= body_size * 1.18
+        #     or stripped.lower() in {"abstract", "introduction", "references", "conclusion"}
+        #     or stripped.startswith(("摘要", "引言", "结论", "参考文献", "附录"))
+        # )
+
+        #防止出现单行误识别为标题：只把长度小于100的单行识别为标题
         looks_like_heading = single_line and (
             font_size >= body_size * 1.18
-            or stripped.lower() in {"abstract", "introduction", "references", "conclusion"}
-            or stripped.startswith(("摘要", "引言", "结论", "参考文献", "附录"))
+            and len(stripped) < 100  
+            and not re.search(r"Trained on", stripped, re.IGNORECASE)
+            and stripped.lower() not in {"abstract", "introduction", "references", "conclusion"}
+            and not stripped.startswith(("摘要", "引言", "结论", "参考文献", "附录"))
         )
         if is_title:
             return "heading", 1, "title"
