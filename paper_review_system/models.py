@@ -38,6 +38,7 @@ class PaperBlock:
     table_headers: list[str] | None = None
     table_rows: list[list[str]] | None = None
     table_caption: str | None = None
+    table_caption_position: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _drop_none(asdict(self))

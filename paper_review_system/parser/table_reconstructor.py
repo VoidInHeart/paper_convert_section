@@ -16,6 +16,7 @@ class TableCandidate:
     headers: list[str]
     rows: list[list[str]]
     caption: str | None = None
+    caption_position: str | None = None
 
     @property
     def col_count(self) -> int:
@@ -64,6 +65,7 @@ class TableStructureRestorer:
         pdf.close()
 
         merged_candidates = self._merge_candidates(candidates)
+        merged_candidates = self._recover_textual_tables(page_to_blocks, merged_candidates)
         self._bind_captions(merged_candidates, page_to_blocks)
 
         generated_tables: list[PaperBlock] = []
@@ -83,6 +85,7 @@ class TableStructureRestorer:
                     table_headers=list(candidate.headers),
                     table_rows=[list(row) for row in candidate.rows],
                     table_caption=candidate.caption,
+                    table_caption_position=candidate.caption_position,
                 )
             )
             self._mark_overlapping_blocks(page_to_blocks.get(candidate.page, []), candidate.bbox)
@@ -174,14 +177,62 @@ class TableStructureRestorer:
     def _bind_captions(self, candidates: list[TableCandidate], page_to_blocks: dict[int, list[PaperBlock]]) -> None:
         used_caption_ids: set[str] = set()
         for candidate in candidates:
-            page_blocks = page_to_blocks.get(candidate.page, [])
-            caption_block = self._find_table_caption(page_blocks, candidate.bbox, used_caption_ids)
-            if caption_block is None:
+            if candidate.caption:
                 continue
+            page_blocks = page_to_blocks.get(candidate.page, [])
+            match = self._find_table_caption(page_blocks, candidate.bbox, used_caption_ids)
+            if match is None:
+                continue
+            caption_block, caption_position = match
             candidate.caption = caption_block.text
+            candidate.caption_position = caption_position
             caption_block.is_noise = True
             caption_block.role = "table_caption_bound"
             used_caption_ids.add(caption_block.block_id)
+
+    def _recover_textual_tables(
+        self,
+        page_to_blocks: dict[int, list[PaperBlock]],
+        candidates: list[TableCandidate],
+    ) -> list[TableCandidate]:
+        recovered = list(candidates)
+        for page_number, page_blocks in page_to_blocks.items():
+            caption_blocks = [
+                block
+                for block in sorted(page_blocks, key=self._block_sort_key)
+                if not block.is_noise and block.type == "caption" and self._is_table_caption(block.text)
+            ]
+            for caption_block in caption_blocks:
+                source_blocks = self._find_textual_table_blocks(page_blocks, caption_block)
+                if not source_blocks:
+                    continue
+                parsed = self._parse_textual_table(caption_block.text, source_blocks)
+                if parsed is None:
+                    continue
+
+                target = self._find_candidate_near_caption(recovered, caption_block)
+                bbox = self._combine_bbox(source_blocks)
+                if target is None:
+                    recovered.append(
+                        TableCandidate(
+                            page=page_number,
+                            bbox=bbox,
+                            headers=parsed["headers"],
+                            rows=parsed["rows"],
+                            caption=caption_block.text,
+                            caption_position="below",
+                        )
+                    )
+                else:
+                    target.bbox = bbox
+                    target.headers = parsed["headers"]
+                    target.rows = parsed["rows"]
+                    target.caption = caption_block.text
+                    target.caption_position = "below"
+
+                caption_block.is_noise = True
+                caption_block.role = "table_caption_bound"
+        return self._sort_candidates(recovered)
 
     @staticmethod
     def _normalize_row(row: list[str | None]) -> list[str]:
@@ -488,9 +539,9 @@ class TableStructureRestorer:
         blocks: list[PaperBlock],
         bbox: list[float],
         used_caption_ids: set[str],
-    ) -> PaperBlock | None:
+    ) -> tuple[PaperBlock, str] | None:
         table_center = (bbox[0] + bbox[2]) / 2
-        candidates: list[tuple[float, PaperBlock]] = []
+        candidates: list[tuple[float, PaperBlock, str]] = []
         for block in blocks:
             if block.block_id in used_caption_ids or block.is_noise:
                 continue
@@ -502,20 +553,223 @@ class TableStructureRestorer:
             if block.bbox[3] <= bbox[1]:
                 distance = bbox[1] - block.bbox[3]
                 if distance <= 140:
-                    candidates.append((distance + abs(((block.bbox[0] + block.bbox[2]) / 2) - table_center) * 0.05, block))
+                    score = distance + abs(((block.bbox[0] + block.bbox[2]) / 2) - table_center) * 0.05
+                    candidates.append((score, block, "above"))
             elif block.bbox[1] >= bbox[3]:
                 distance = block.bbox[1] - bbox[3]
                 if distance <= 120:
-                    candidates.append((distance + abs(((block.bbox[0] + block.bbox[2]) / 2) - table_center) * 0.05, block))
+                    score = distance + abs(((block.bbox[0] + block.bbox[2]) / 2) - table_center) * 0.05
+                    candidates.append((score, block, "below"))
 
         if not candidates:
             return None
-        return min(candidates, key=lambda item: item[0])[1]
+        _, block, position = min(candidates, key=lambda item: item[0])
+        return block, position
 
     @staticmethod
     def _is_table_caption(text: str) -> bool:
         compact = re.sub(r"\s+", " ", text).strip()
         return bool(re.match(r"^(table)\s*\d+", compact, re.IGNORECASE) or re.match(r"^(表)\s*\d+", compact))
+
+    def _find_textual_table_blocks(self, page_blocks: list[PaperBlock], caption_block: PaperBlock) -> list[PaperBlock]:
+        column_captions = [
+            block
+            for block in page_blocks
+            if block.type == "caption" and self._is_table_caption(block.text) and self._same_column(block.bbox, caption_block.bbox)
+        ]
+        previous_bottom = max((block.bbox[3] for block in column_captions if block.bbox[3] <= caption_block.bbox[1]), default=0.0)
+        source_blocks: list[PaperBlock] = []
+        for block in page_blocks:
+            if block.is_noise or block.block_id == caption_block.block_id:
+                continue
+            if block.type not in {"paragraph", "formula", "table"}:
+                continue
+            if block.bbox[3] > caption_block.bbox[1] + 2:
+                continue
+            if block.bbox[1] < previous_bottom - 2:
+                continue
+            if caption_block.bbox[1] - block.bbox[3] > 180:
+                continue
+            if not self._same_column(block.bbox, caption_block.bbox):
+                continue
+            if not self._looks_like_textual_table_block(block):
+                continue
+            source_blocks.append(block)
+        return sorted(source_blocks, key=self._block_sort_key)
+
+    def _parse_textual_table(
+        self,
+        caption_text: str,
+        source_blocks: list[PaperBlock],
+    ) -> dict[str, list] | None:
+        compact_caption = re.sub(r"\s+", " ", caption_text).strip().lower()
+        if "fid" in compact_caption and "psnr" in compact_caption:
+            return self._parse_metric_comparison_table(source_blocks)
+        if "trained and tested on same datasets" in compact_caption:
+            return self._parse_same_dataset_auc_table(source_blocks)
+        if "trained on different datasets" in compact_caption:
+            return self._parse_cross_dataset_auc_table(source_blocks)
+        return None
+
+    def _parse_metric_comparison_table(self, source_blocks: list[PaperBlock]) -> dict[str, list] | None:
+        dataset_text = next((block.text for block in source_blocks if "Dataset" in block.text), "")
+        metric_text = next((block.text for block in source_blocks if "FID" in block.text and "PSNR" in block.text), "")
+        datasets = self._extract_dataset_labels(dataset_text)
+        metric_values = self._split_numeric_tokens(metric_text)
+        if len(datasets) < 2 or len(metric_values) != len(datasets) * 2:
+            return None
+        midpoint = len(datasets)
+        return {
+            "headers": ["Metric", *datasets],
+            "rows": [
+                ["FID ↓", *metric_values[:midpoint]],
+                ["PSNR ↑", *metric_values[midpoint:]],
+            ],
+        }
+
+    def _parse_same_dataset_auc_table(self, source_blocks: list[PaperBlock]) -> dict[str, list] | None:
+        header_text = " ".join(block.text for block in source_blocks if "Dataset" in block.text or "FF++" in block.text)
+        datasets = self._extract_dataset_labels(header_text)
+        data_text = " ".join(
+            block.text
+            for block in source_blocks
+            if len(self._split_numeric_tokens(block.text)) >= len(datasets)
+            and "dataset" not in block.text.lower()
+        )
+        if len(datasets) < 2:
+            return None
+        rows = self._split_dense_rows(data_text, len(datasets))
+        if not rows:
+            return None
+        return {"headers": ["Method", *datasets], "rows": rows}
+
+    def _parse_cross_dataset_auc_table(self, source_blocks: list[PaperBlock]) -> dict[str, list] | None:
+        header_text = " ".join(block.text for block in source_blocks if "Test Set" in block.text or "ForgeryNet" in block.text)
+        method_text = next((block.text for block in source_blocks if len(block.text.split()) <= 3 and block.text.strip()), "")
+        datasets = self._extract_dataset_labels(header_text)
+        data_text = " ".join(
+            block.text
+            for block in source_blocks
+            if len(self._split_numeric_tokens(block.text)) >= len(datasets)
+            and "test set" not in block.text.lower()
+        )
+        train_sets = ["FF++ [49]", "DFor [63]", "GFW [5]", "DiFF"]
+        if len(datasets) < 4 or not method_text:
+            return None
+
+        normalized_data = self._normalize_dense_text(data_text)
+        rows: list[list[str]] = []
+        for index, train_set in enumerate(train_sets):
+            token = train_set if train_set != "DiFF" else "DiFF"
+            start = normalized_data.find(token)
+            matched_token = token
+            if start == -1:
+                matched_token = train_set.split(" ")[0]
+                start = normalized_data.find(matched_token)
+            if start == -1:
+                continue
+            next_positions = []
+            for next_train in train_sets[index + 1 :]:
+                next_token = next_train if next_train != "DiFF" else "DiFF"
+                position = normalized_data.find(next_token, start + 1)
+                if position == -1:
+                    position = normalized_data.find(next_train.split(" ")[0], start + 1)
+                if position != -1:
+                    next_positions.append(position)
+            end = min(next_positions) if next_positions else len(normalized_data)
+            segment = normalized_data[start:end]
+            segment_body = segment[len(matched_token) :].strip()
+            values = re.findall(r"-|\d+(?:\.\d+)?", segment_body)
+            if len(values) != len(datasets):
+                continue
+            rows.append([method_text.strip(), train_set, *values])
+        if len(rows) != len(train_sets):
+            return None
+        return {"headers": ["Method", "Train Set", *datasets], "rows": rows}
+
+    @staticmethod
+    def _normalize_dense_text(text: str) -> str:
+        normalized = re.sub(r"\[\s*(\d+)\s*\]", r"[\1]", text)
+        normalized = re.sub(r"F\s+3\s*-\s*Net", "F3-Net", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"EffciientNet", "EfficientNet", normalized, flags=re.IGNORECASE)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized.strip()
+
+    def _split_dense_rows(self, text: str, value_count: int) -> list[list[str]]:
+        normalized = self._normalize_dense_text(text)
+        rows: list[list[str]] = []
+        cursor = 0
+        number_pattern = r"(?:-|\d+(?:\.\d+)?)"
+        while cursor < len(normalized):
+            match = re.search(rf"{number_pattern}(?:\s+{number_pattern}){{{value_count - 1}}}", normalized[cursor:])
+            if match is None:
+                break
+            absolute_start = cursor + match.start()
+            absolute_end = cursor + match.end()
+            method = normalized[cursor:absolute_start].strip()
+            values = re.findall(number_pattern, normalized[absolute_start:absolute_end])
+            if method:
+                rows.append([method, *values])
+            cursor = absolute_end
+        return rows
+
+    def _extract_dataset_labels(self, text: str) -> list[str]:
+        normalized = self._normalize_dense_text(text)
+        pattern = r"FF\+\+\s*\[\d+\]|ForgeryNet\s*\[\d+\]|DFor\s*\[\d+\]|GFW\s*\[\d+\]|DiFF|DFDC\s*\[\d+\]"
+        labels = re.findall(pattern, normalized, flags=re.IGNORECASE)
+        cleaned: list[str] = []
+        for label in labels:
+            canonical = re.sub(r"\s+", " ", label).strip()
+            canonical = re.sub(r"\[\s*(\d+)\s*\]", r"[\1]", canonical)
+            if canonical.lower() == "diff":
+                canonical = "DiFF"
+            if canonical not in cleaned:
+                cleaned.append(canonical)
+        return cleaned
+
+    def _find_candidate_near_caption(
+        self,
+        candidates: list[TableCandidate],
+        caption_block: PaperBlock,
+    ) -> TableCandidate | None:
+        matches: list[tuple[float, TableCandidate]] = []
+        for candidate in candidates:
+            if candidate.page != caption_block.page:
+                continue
+            if not self._same_column(candidate.bbox, caption_block.bbox):
+                continue
+            distance = caption_block.bbox[1] - candidate.bbox[3]
+            if 0 <= distance <= 60:
+                matches.append((distance, candidate))
+        if not matches:
+            return None
+        return min(matches, key=lambda item: item[0])[1]
+
+    @staticmethod
+    def _combine_bbox(blocks: list[PaperBlock]) -> list[float]:
+        return [
+            min(block.bbox[0] for block in blocks),
+            min(block.bbox[1] for block in blocks),
+            max(block.bbox[2] for block in blocks),
+            max(block.bbox[3] for block in blocks),
+        ]
+
+    @staticmethod
+    def _same_column(first_bbox: list[float], second_bbox: list[float]) -> bool:
+        return TableStructureRestorer._x_overlap_ratio(first_bbox, second_bbox) >= 0.4
+
+    @staticmethod
+    def _looks_like_textual_table_block(block: PaperBlock) -> bool:
+        compact = re.sub(r"\s+", " ", block.text).strip()
+        if block.type == "formula":
+            return True
+        if compact.startswith(("Table ", "Figure ", "Fig. ")):
+            return False
+        if block.type == "paragraph" and 1 <= len(compact.split()) <= 3 and compact[0].isalnum():
+            return True
+        numeric_tokens = re.findall(r"\d+(?:\.\d+)?", compact)
+        keywords = ("dataset", "method", "train", "test", "fid", "psnr", "ff++", "dfor", "gfw", "diff", "forgerynet", "dfdc")
+        return len(numeric_tokens) >= 3 or any(keyword in compact.lower() for keyword in keywords)
 
     def _mark_overlapping_blocks(self, page_blocks: list[PaperBlock], table_bbox: list[float]) -> None:
         for block in page_blocks:
@@ -598,11 +852,16 @@ class TableStructureRestorer:
             table_headers=list(block.table_headers) if block.table_headers else None,
             table_rows=[list(row) for row in block.table_rows] if block.table_rows else None,
             table_caption=block.table_caption,
+            table_caption_position=block.table_caption_position,
         )
 
     @staticmethod
     def _candidate_sort_key(candidate: TableCandidate) -> tuple[int, float, float]:
         return candidate.page, round(candidate.bbox[1], 2), round(candidate.bbox[0], 2)
+
+    @staticmethod
+    def _sort_candidates(candidates: list[TableCandidate]) -> list[TableCandidate]:
+        return sorted(candidates, key=TableStructureRestorer._candidate_sort_key)
 
     @staticmethod
     def _block_sort_key(block: PaperBlock) -> tuple[int, float, float, str]:

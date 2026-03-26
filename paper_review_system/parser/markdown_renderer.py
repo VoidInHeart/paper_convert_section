@@ -84,10 +84,15 @@ class MarkdownRenderer:
         rows = [list(row) for row in (block.table_rows or [])]
         lines: list[str] = []
         if block.table_caption:
-            lines.append(f"> {block.table_caption}")
-            lines.append("")
+            caption_lines = [f"> {block.table_caption}", ""]
+        else:
+            caption_lines = []
         if not rows:
+            if block.table_caption_position != "below":
+                lines.extend(caption_lines)
             lines.extend(["```text", *block.text.splitlines(), "```"])
+            if block.table_caption_position == "below" and block.table_caption:
+                lines.extend(["", f"> {block.table_caption}"])
             return lines
 
         col_count = max(len(headers), *(len(row) for row in rows))
@@ -96,12 +101,16 @@ class MarkdownRenderer:
         headers = self._pad_row(headers, col_count)
         normalized_rows = [self._pad_row(row, col_count) for row in rows]
 
+        if block.table_caption_position != "below":
+            lines.extend(caption_lines)
         lines.extend([
             "| " + " | ".join(self._escape_cell(cell) for cell in headers) + " |",
             "| " + " | ".join("---" for _ in range(col_count)) + " |",
         ])
         for row in normalized_rows:
             lines.append("| " + " | ".join(self._escape_cell(cell) for cell in row) + " |")
+        if block.table_caption_position == "below" and block.table_caption:
+            lines.extend(["", f"> {block.table_caption}"])
         return lines
 
     @staticmethod

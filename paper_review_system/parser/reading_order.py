@@ -50,7 +50,7 @@ class ReadingOrderResolver:
 
         for block in blocks:
             region = self._classify_region(block, split_x, page.width)
-            if block.bbox[3] <= column_top + 24:
+            if region == "full" and block.bbox[3] <= column_top + 24:
                 top_full_width.append(block)
             elif region == "left":
                 left_column.append(block)

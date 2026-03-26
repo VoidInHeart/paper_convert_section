@@ -64,6 +64,21 @@ class MarkdownRendererTest(unittest.TestCase):
         self.assertIn("| Method | Score |", markdown)
         self.assertIn("| A | 91 |", markdown)
 
+    def test_render_places_below_caption_after_table(self) -> None:
+        block = PaperBlock(
+            block_id="tbl_1",
+            page=1,
+            bbox=[0, 0, 10, 10],
+            type="table",
+            text="Method\tScore\nA\t91",
+            table_headers=["Method", "Score"],
+            table_rows=[["A", "91"]],
+            table_caption="Table 2. Below",
+            table_caption_position="below",
+        )
+        markdown = MarkdownRenderer().render([block])
+        self.assertLess(markdown.find("| Method | Score |"), markdown.find("> Table 2. Below"))
+
     def test_table_reconstructor_extracts_headers_and_expands_rows(self) -> None:
         class FakeHeader:
             names = ["Method", "Score"]
@@ -128,6 +143,7 @@ class MarkdownRendererTest(unittest.TestCase):
         }
         restorer._bind_captions([candidate], blocks)
         self.assertEqual(candidate.caption, "Table 2. Demo table")
+        self.assertEqual(candidate.caption_position, "below")
         self.assertTrue(blocks[1][0].is_noise)
         self.assertEqual(blocks[1][0].role, "table_caption_bound")
 
@@ -176,6 +192,68 @@ class MarkdownRendererTest(unittest.TestCase):
         ]
         ordered = resolver.order_blocks(blocks, [PageInfo(page=1, width=595, height=842)])
         self.assertEqual([block.block_id for block in ordered], ["left_top", "left_low", "right_top", "right_low"])
+
+    def test_reading_order_keeps_column_tables_out_of_top_full_width_bucket(self) -> None:
+        resolver = ReadingOrderResolver()
+        blocks = [
+            PaperBlock(block_id="left_body", page=1, bbox=[50, 350, 280, 430], type="paragraph", text="left body " * 30),
+            PaperBlock(block_id="right_body", page=1, bbox=[310, 340, 540, 420], type="paragraph", text="right body " * 30),
+            PaperBlock(block_id="left_table_source", page=1, bbox=[56, 90, 278, 150], type="paragraph", text="dataset 1 2 3 4 5"),
+            PaperBlock(block_id="right_table", page=1, bbox=[315, 72, 545, 208], type="table", text="a\tb", table_headers=["A", "B"], table_rows=[["1", "2"]]),
+        ]
+        ordered = resolver.order_blocks(blocks, [PageInfo(page=1, width=595, height=842)])
+        self.assertEqual([block.block_id for block in ordered], ["left_table_source", "left_body", "right_table", "right_body"])
+
+    def test_parse_textual_table_4_style(self) -> None:
+        restorer = TableStructureRestorer()
+        blocks = [
+            PaperBlock(block_id="1", page=1, bbox=[0, 0, 1, 1], type="formula", text="Dataset FF++ [ 49 ] ForgeryNet [ 18 ] DFor [ 63 ] GFW [ 5 ] DiFF"),
+            PaperBlock(block_id="2", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="FID ↓ 33.87 36.94 31.79 39.35 25.75 PSNR ↑ 18.47 18.98 19.17 19.14 19.95"),
+        ]
+        parsed = restorer._parse_textual_table("Table 4. FID and PSNR comparison across various datasets.", blocks)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["headers"], ["Metric", "FF++ [49]", "ForgeryNet [18]", "DFor [63]", "GFW [5]", "DiFF"])
+        self.assertEqual(parsed["rows"][0], ["FID ↓", "33.87", "36.94", "31.79", "39.35", "25.75"])
+
+    def test_parse_textual_table_5_style(self) -> None:
+        restorer = TableStructureRestorer()
+        blocks = [
+            PaperBlock(block_id="1", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Method Dataset"),
+            PaperBlock(block_id="2", page=1, bbox=[0, 0, 1, 1], type="formula", text="FF++ [ 49 ] GFW [ 5 ] DiFF"),
+            PaperBlock(block_id="3", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Xception 98.12 99.72 93.87 F 3 -Net 98.89 99.17 98.47 EfficientNet 98.51 97.58 94.34 DIRE 99.43 99.59 96.35"),
+        ]
+        parsed = restorer._parse_textual_table("Table 5. AUC (%) of detectors trained and tested on same datasets.", blocks)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["headers"], ["Method", "FF++ [49]", "GFW [5]", "DiFF"])
+        self.assertEqual(parsed["rows"][1], ["F3-Net", "98.89", "99.17", "98.47"])
+
+    def test_parse_textual_table_6_style(self) -> None:
+        restorer = TableStructureRestorer()
+        blocks = [
+            PaperBlock(block_id="1", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Method Train Test Set"),
+            PaperBlock(block_id="2", page=1, bbox=[0, 0, 1, 1], type="formula", text="Set FF++ [ 49 ] DFor [ 63 ] GFW [ 5 ] DiFF DFDC [ 13 ] ForgeryNet [ 18 ]"),
+            PaperBlock(block_id="3", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Xception"),
+            PaperBlock(block_id="4", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="FF++ - 40.65 43.42 65.96 63.97 50.56 DFor 55.21 - 52.30 75.67 56.35 38.06 GFW 53.37 45.81 - 74.87 51.43 62.75 DiFF 65.33 55.30 63.50 - 67.10 65.78"),
+        ]
+        parsed = restorer._parse_textual_table("Table 6. AUC (%) of detectors trained on different datasets.", blocks)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["headers"], ["Method", "Train Set", "FF++ [49]", "DFor [63]", "GFW [5]", "DiFF", "DFDC [13]", "ForgeryNet [18]"])
+        self.assertEqual(parsed["rows"][0], ["Xception", "FF++ [49]", "-", "40.65", "43.42", "65.96", "63.97", "50.56"])
+
+    def test_find_candidate_near_caption_prefers_nearest_table(self) -> None:
+        restorer = TableStructureRestorer()
+        caption = PaperBlock(block_id="cap", page=1, bbox=[60, 220, 260, 230], type="caption", text="Table 2. Demo")
+        candidates = [
+            TableCandidate(page=1, bbox=[60, 80, 260, 100], headers=["A"], rows=[["1"]]),
+            TableCandidate(page=1, bbox=[60, 170, 260, 205], headers=["B"], rows=[["2"]]),
+        ]
+        target = restorer._find_candidate_near_caption(candidates, caption)
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertEqual(target.headers, ["B"])
 
     def test_long_multiline_text_is_not_heading(self) -> None:
         block_type, level, role = PDFParser._classify_block(
