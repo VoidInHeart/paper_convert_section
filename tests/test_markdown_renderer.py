@@ -226,6 +226,35 @@ class MarkdownRendererTest(unittest.TestCase):
         self.assertEqual(parsed["rows"][1], ["Xception", "w/o regu.", "95.54 (-0.03)", "88.91 (-0.57)", "43.31 (-0.43)", "53.21 (-2.29)"])
         self.assertEqual(parsed["rows"][-1], ["DIRE", "w/o regu.", "99.78 (-0.01)", "99.70 (-0.06)", "32.36 (-11.23)", "61.61 (-4.80)"])
 
+    def test_parse_dataset_comparison_table(self) -> None:
+        restorer = TableStructureRestorer()
+        blocks = [
+            PaperBlock(block_id="1", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Dataset Venue Type #Synthetic #Diffusion Conditions Real Images Prompts Images Methods T2I I2I FS FE Source Labels"),
+            PaperBlock(block_id="2", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Stöckl et al . [ 57 ] Arxiv’22 General 260K 1 ✓ × × × ✓ × Nouns of WordNet GFW [ 5 ] Arxiv’22 Facial 15K 3 ✓ × × × × × Captions of the image dataset"),
+            PaperBlock(block_id="3", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Mundra et al . [ 39 ] CVPRW’23 Facial 1.5K 1 ✓ × × × × × 10 pre-defined templates DiFF (Ours) - Facial 500K 13 ✓ ✓ ✓ ✓ ✓ ✓ 30K+ filtered high-quality prompts"),
+        ]
+        parsed = restorer._parse_dataset_comparison_table(blocks)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["headers"][0], "Dataset")
+        self.assertEqual(parsed["rows"][0][:6], ["Stöckl et al. [57]", "Arxiv’22", "General", "260K", "1", "✓"])
+        self.assertEqual(parsed["rows"][-1], ["DiFF (Ours)", "-", "Facial", "500K", "13", "✓", "✓", "✓", "✓", "✓", "✓", "30K+ filtered high-quality prompts"])
+
+    def test_parse_human_performance_table(self) -> None:
+        restorer = TableStructureRestorer()
+        blocks = [
+            PaperBlock(block_id="1", page=1, bbox=[0, 0, 1, 1], type="formula", text="Text-to-Image Image-to-Image Face Swapping Face Editing"),
+            PaperBlock(block_id="2", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Method ACC Method ACC Method ACC Method ACC"),
+            PaperBlock(block_id="3", page=1, bbox=[0, 0, 1, 1], type="paragraph", text="Midjourney 65.32 SDXL Refiner 71.85 DiffFace 36.33 Imagic 68.17 SDXL 72.11 LoRA 33.33 DCFace 66.67 CoDiff 27.78 FreeDoM T 25.47 DreamBooth 76.65 CycleDiff 40.65 HPS 75.68 FreeDoM I 56.67"),
+        ]
+        parsed = restorer._parse_human_performance_table(blocks)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed["headers"], ["Condition", "Method", "ACC"])
+        self.assertEqual(parsed["rows"][0], ["Text-to-Image", "Midjourney", "65.32"])
+        self.assertEqual(parsed["rows"][3], ["Face Editing", "Imagic", "68.17"])
+        self.assertEqual(parsed["rows"][-1], ["Face Editing", "FreeDoM I", "56.67"])
+
     def test_reading_order_prefers_left_column_before_right_column(self) -> None:
         resolver = ReadingOrderResolver()
         blocks = [

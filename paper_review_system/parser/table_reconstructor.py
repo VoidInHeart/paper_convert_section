@@ -730,6 +730,10 @@ class TableStructureRestorer:
         compact_caption = re.sub(r"\s+", " ", caption_text).strip().lower()
         if "fid" in compact_caption and "psnr" in compact_caption:
             return self._parse_metric_comparison_table(source_blocks)
+        if "comparison of diff and mainstream diffusion datasets" in compact_caption:
+            return self._parse_dataset_comparison_table(source_blocks)
+        if "human performance" in compact_caption:
+            return self._parse_human_performance_table(source_blocks)
         if "trained and tested on same datasets" in compact_caption:
             return self._parse_same_dataset_auc_table(source_blocks)
         if "trained on different datasets" in compact_caption:
@@ -753,6 +757,86 @@ class TableStructureRestorer:
                 ["PSNR ↑", *metric_values[midpoint:]],
             ],
         }
+
+    def _parse_dataset_comparison_table(self, source_blocks: list[PaperBlock]) -> dict[str, list] | None:
+        data_text = " ".join(
+            block.text
+            for block in source_blocks
+            if any(ch.isdigit() for ch in block.text)
+            and "Dataset Venue Type" not in block.text
+        )
+        normalized = self._normalize_dense_text(data_text)
+        normalized = re.sub(r"\bet al \.", "et al.", normalized)
+        source_pattern = (
+            r"Nouns of WordNet|Captions of the image dataset|Unconditional generation|"
+            r"\d+\s+handwritten prompts for editing|\d+\s+pre-defined templates?|"
+            r"30K\+\s+filtered high-quality prompts"
+        )
+        pattern = re.compile(
+            r"(?P<dataset>DiFF \(Ours\)|[^\s]+\s+et al\.\s+\[\d+\]|[^\s]+(?:-[^\s]+)?\s+\[\d+\])\s+"
+            r"(?P<venue>Arxiv[’']?\d{2}|CVPRW?[’']?\d{2}|CVPR[’']?\d{2}|ICCV[’']?\d{2}|ICASSP[’']?\d{2}|NeurIPS[’']?\d{2}|-)\s+"
+            r"(?P<type>General|Facial)\s+"
+            r"(?P<synthetic>[\d,.]+K)\s+"
+            r"(?P<methods>\d+)\s+"
+            r"(?P<t2i>[✓×])\s+(?P<i2i>[✓×])\s+(?P<fs>[✓×])\s+(?P<fe>[✓×])\s+(?P<real>[✓×])\s+(?P<prompts>[✓×])\s+"
+            rf"(?P<source>{source_pattern})"
+        )
+        matches = list(pattern.finditer(normalized))
+        if not matches:
+            return None
+
+        rows: list[list[str]] = []
+        for match in matches:
+            rows.append(
+                [
+                    match.group("dataset").strip(),
+                    match.group("venue").strip(),
+                    match.group("type").strip(),
+                    match.group("synthetic").strip(),
+                    match.group("methods").strip(),
+                    match.group("t2i"),
+                    match.group("i2i"),
+                    match.group("fs"),
+                    match.group("fe"),
+                    match.group("real"),
+                    match.group("prompts"),
+                    match.group("source").strip(),
+                ]
+            )
+        return {
+            "headers": ["Dataset", "Venue", "Type", "#Synthetic Images", "#Diffusion Methods", "T2I", "I2I", "FS", "FE", "Real Images", "Prompts", "Source Labels"],
+            "rows": rows,
+        }
+
+    def _parse_human_performance_table(self, source_blocks: list[PaperBlock]) -> dict[str, list] | None:
+        condition_headers = ["Text-to-Image", "Image-to-Image", "Face Swapping", "Face Editing"]
+        data_text = " ".join(block.text for block in source_blocks if any(ch.isdigit() for ch in block.text))
+        pairs = self._split_single_metric_pairs(data_text)
+        if len(pairs) < len(condition_headers):
+            return None
+
+        base_count = len(pairs) // len(condition_headers)
+        remainder = len(pairs) % len(condition_headers)
+        counts = [base_count] * len(condition_headers)
+        for index in range(remainder):
+            counts[-(index + 1)] += 1
+
+        rows: list[list[str]] = []
+        cursor = 0
+        max_rows = max(counts)
+        for row_index in range(max_rows):
+            for condition_index, condition in enumerate(condition_headers):
+                if row_index >= counts[condition_index]:
+                    continue
+                if cursor >= len(pairs):
+                    return None
+                method, value = pairs[cursor]
+                rows.append([condition, method, value])
+                cursor += 1
+
+        if cursor != len(pairs):
+            return None
+        return {"headers": ["Condition", "Method", "ACC"], "rows": rows}
 
     def _parse_same_dataset_auc_table(self, source_blocks: list[PaperBlock]) -> dict[str, list] | None:
         header_text = " ".join(block.text for block in source_blocks if "Dataset" in block.text or "FF++" in block.text)
@@ -910,6 +994,18 @@ class TableStructureRestorer:
                 rows.append([method, *values])
             cursor = absolute_end
         return rows
+
+    def _split_single_metric_pairs(self, text: str) -> list[tuple[str, str]]:
+        normalized = self._normalize_dense_text(text)
+        pairs: list[tuple[str, str]] = []
+        cursor = 0
+        for match in re.finditer(r"\d+(?:\.\d+)?", normalized):
+            method = normalized[cursor:match.start()].strip()
+            value = match.group(0)
+            if method:
+                pairs.append((method, value))
+            cursor = match.end()
+        return pairs
 
     def _extract_dataset_labels(self, text: str) -> list[str]:
         normalized = self._normalize_dense_text(text)
